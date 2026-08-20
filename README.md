@@ -31,7 +31,7 @@ Example: `scraped_output/a3/a3f1c9e2b4d0abcd_docs_getting-started.md`
 
 - **Two-character subdirectory:** a large crawl would otherwise dump thousands of files into one folder, which slows listings, backups, and some filesystems. Sharding by `hash[:2]` spreads files across up to 256 directories (`00`–`ff`).
 - **Hash in the filename:** using the raw URL as the name hits path-length limits, and stripping unsafe characters can make different URLs collide. The hash is a stable unique id; the slug is only so you can guess the page at a glance.
-- **Finding a page by URL:** do not expect `docs/api/v1/page.md`. Use `lookup_crawl.py` (see [Inspect crawl state](#inspect-crawl-state)), or read `manifest.json` / `crawl_state.db` (`url` → `filepath`).
+- **Finding a page by URL:** do not expect `docs/api/v1/page.md`. Use `lookup_crawl.py -o scraped_output` (disk) or `lookup_crawl.py -f crawl_data.db` (SQLite), or read `manifest.json` / `crawl_state.db` / `scraped_pages`. See [Inspect crawl state](#inspect-crawl-state).
 
 ### Focused page content
 
@@ -156,17 +156,61 @@ uv run python crawl_into_disk.py https://example.com -o scraped_output \
 
 Library helper: `from crawler.status import drain_max_pages` (used by `Crawler` when `drain_pending=True`).
 
-### URL → disk path — `lookup_crawl.py`
+### URL → location — `lookup_crawl.py`
 
-Resolves one URL against a disk crawl output dir: frontier status, recorded `filepath`, expected hash path, and whether the file exists (`ok` when status is `done` and the file is present):
+Resolves one URL against a **disk** crawl (`-o`) or **SQLite** crawl (`-f`). Do not pass both; default is `-o scraped_output` when neither is set.
 
 ```bash
+# Disk: frontier + filepath under scraped_output/
 uv run python lookup_crawl.py "https://example.com/docs/page" -o scraped_output
 uv run python lookup_crawl.py "https://example.com/docs/page" -o scraped_output --strict
 uv run python lookup_crawl.py "https://example.com/docs/page" -o scraped_output --format json
+
+# SQLite: frontier + scraped_pages row in crawl_data.db
+uv run python lookup_crawl.py "https://example.com/docs/page" -f crawl_data.db
+uv run python lookup_crawl.py "https://example.com/docs/page" -f crawl_data.db --format json
 ```
 
-`--strict` exits `1` unless `ok`. Library: `from crawler.lookup import lookup_disk_url`.
+| Store | Flag | What `ok` means |
+|---|---|---|
+| Disk | `-o` | `status=done` and the page file exists (`filepath` / expected hash path) |
+| SQLite | `-f` | `status=done` and a `scraped_pages` row exists for the URL |
+
+Libraries: `lookup_disk_url`, `lookup_db_url` (`DiskUrlLocation` / `DbUrlLocation`).
+
+### Links on a page — `lookup_crawl.py --links`
+
+Requirement: given a crawled page URL, parse its **saved content** and list every URL linked from that page.
+
+```bash
+# Disk crawl (-o): reads the saved .md/.html/.json file
+uv run python lookup_crawl.py \
+  "https://techdocs.akamai.com/cloud-computing/docs/manage-nodebalancers" \
+  -o scraped_output --links --format json
+
+# SQLite crawl (-f): reads scraped_pages.content in the DB
+uv run python lookup_crawl.py \
+  "https://techdocs.akamai.com/cloud-computing/docs/manage-nodebalancers" \
+  -f crawl_data.db --links --format json
+```
+
+Workflow:
+1. Crawl so the page is `done` (disk file exists, or a `scraped_pages` row exists).
+2. Optionally confirm with lookup (no `--links`) that `ok: True`.
+3. Run with `--links` to print location metadata plus `store`, `source`, `link_count`, and each absolute URL.
+
+How links are found (depends on crawl `-t` / `scraped_pages.format`):
+- `markdown` — `[text](url)`, `<https://…>` autolinks, and any leftover HTML `<a href>`
+- `html` — all `<a href>` via the same extractor the crawler uses
+- `json` — prefers `cleaned_html` in the payload, else the `markdown` field
+
+Relative hrefs are resolved against the page URL and normalized (same rules as the crawler). Duplicates are removed; order is preserved.
+
+Notes:
+- Reads **stored** content only (does not re-fetch the live site).
+- With default `--content main`, nav/footer chrome is often stripped, so those links will not appear. Re-crawl with `--content full` (or `--reprocess-url` + `--drain-pending`) if you need every link from the full HTML.
+- Fragment-only links (`#section`) are skipped.
+- Libraries: `list_links_from_disk_url`, `list_links_from_db_url` in `crawler.page_links`.
 
 ## Options
 

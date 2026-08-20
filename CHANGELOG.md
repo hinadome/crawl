@@ -10,9 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 #### Crawl inspection tools
 - `crawl_status.py` — print frontier counts (`pending` / `in_progress` / `done` / `failed` / `skipped` / `skipped_depth`) from a disk crawl (`-o scraped_output` → `crawl_state.db`) or SQLite crawl DB (`-f`). Supports `--format json`. Library: `crawler.status.frontier_status`.
-- `lookup_crawl.py` — map a URL to its on-disk location: frontier status, recorded `filepath`, expected `hash[:2]/hash_slug` path, `file_exists`, and `ok` (done + file present). `--strict` exits 1 unless ok; `--format json` for scripting. Library: `crawler.lookup.lookup_disk_url`.
+- `lookup_crawl.py` — resolve a URL in **disk** (`-o`) or **SQLite** (`-f`) crawl state: frontier status, disk filepath / `scraped_pages` metadata, and `ok`. `--strict` exits 1 unless ok; `--format json` for scripting.
+- Libraries: `crawler.lookup.lookup_disk_url`, `lookup_db_url`, `DiskUrlLocation`, `DbUrlLocation`.
 - Tests: `tests/test_status.py`, `tests/test_lookup.py`.
-- Docs: README “Inspect crawl state”.
+- Docs: README “Inspect crawl state” / “URL → location” (including how to read `total` vs `done` / `skipped_depth`).
+
+#### List links on a crawled page
+- `lookup_crawl.py --links` — list every linked URL in saved page content for **disk** (`-o` → file) or **SQLite** (`-f` → `scraped_pages.content`). Do not combine `-o` and `-f`.
+- Module: `crawler/page_links.py` (`list_links_from_disk_url`, `list_links_from_db_url`, `extract_links_from_content`); relative links normalized; duplicates removed.
+- Respects saved `--content main` body (nav/footer may be missing unless crawled with `--content full`).
+- Tests: `tests/test_page_links.py` (disk + SQLite cases).
+- Docs: README “Links on a page”.
 
 #### Drain pending queue
 - `--drain-pending` on `crawl_into_disk.py` / `crawl_into_db.py`: after `--url` / `--reprocess-url` are applied, raise `--max-pages` to `done + pending + in_progress` so the current pending queue can all be claimed (logs `[DRAIN] … → max_pages=…`).
@@ -65,7 +73,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Gold eval: `--gold` JSONL or `--expect-url`; Hit@k, MRR, Recall@k; `--strict`.
 
 #### Docs and packaging
-- Expanded `README.md` (crawler options, disk layout, focused content, specific URL targets, inspect crawl state, drain pending queue, RAG flows for file and DB, catalog vs Chroma/Qdrant, `--config` YAML, review).
+- Expanded `README.md` (crawler options, disk layout, focused content, specific URL targets, inspect crawl state, drain pending queue, URL lookup + list links for disk and SQLite stores, RAG flows for file and DB, catalog vs Chroma/Qdrant, `--config` YAML, review).
 - Plans/tasks: `IMPLEMENTATION_TASK.md`, `RAG_IMPLEMENTATION_PLAN.md`, `REVIEW_RAG_IMPLEMENTATION_PLAN.md`, `REVIEW_RAG_TASK.md`, `CONTENT_EXTRACTION_IMPLEMENTATION_PLAN.md`, `CONTENT_EXTRACTION_TASK.md`, `URL_TARGETS_IMPLEMENTATION_PLAN.md`, `URL_TARGETS_TASK.md`.
 - Dependencies for crawler + RAG (httpx, aiosqlite, lxml, trafilatura, chromadb, qdrant-client, sentence-transformers, etc.).
 
