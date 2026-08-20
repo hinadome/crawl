@@ -34,16 +34,32 @@ def _url_filename(url: str, ext: str) -> str:
 
 
 class FilesystemSink:
-    def __init__(self, output_dir: str, output_type: str):
+    def __init__(
+        self,
+        output_dir: str,
+        output_type: str,
+        *,
+        content_mode: str = "main",
+        content_selector: str | None = None,
+    ):
         self.output_dir = os.path.abspath(output_dir)
         self.output_type, self.file_ext = parse_output_type(output_type)
+        self.content_mode = content_mode
+        self.content_selector = content_selector
         os.makedirs(self.output_dir, exist_ok=True)
 
     async def save(self, url: str, title: str, html: str) -> str:
         relative = _url_filename(url, self.file_ext)
         filepath = os.path.join(self.output_dir, relative)
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        content, _char_count = render_content(self.output_type, url, html, title)
+        content, _char_count = render_content(
+            self.output_type,
+            url,
+            html,
+            title,
+            content_mode=self.content_mode,
+            content_selector=self.content_selector,
+        )
         with open(filepath, "w", encoding="utf-8") as handle:
             handle.write(content)
         return filepath
@@ -66,9 +82,18 @@ class FilesystemSink:
 
 
 class SqliteSink:
-    def __init__(self, db_path: str, output_type: str):
+    def __init__(
+        self,
+        db_path: str,
+        output_type: str,
+        *,
+        content_mode: str = "main",
+        content_selector: str | None = None,
+    ):
         self.db_path = os.path.abspath(db_path)
         self.output_type, _ext = parse_output_type(output_type)
+        self.content_mode = content_mode
+        self.content_selector = content_selector
         self._db: aiosqlite.Connection | None = None
 
     async def start(self) -> None:
@@ -93,7 +118,14 @@ class SqliteSink:
         if self._db is None:
             await self.start()
         assert self._db is not None
-        content, char_count = render_content(self.output_type, url, html, title)
+        content, char_count = render_content(
+            self.output_type,
+            url,
+            html,
+            title,
+            content_mode=self.content_mode,
+            content_selector=self.content_selector,
+        )
         now = datetime.now(timezone.utc).isoformat()
         await self._db.execute(
             """

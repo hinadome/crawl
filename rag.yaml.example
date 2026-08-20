@@ -1,0 +1,21 @@
+source:
+  type: disk
+  path: scraped_output
+chunker:
+  type: recursive
+  tokens: 512
+  overlap: 64
+  parent_tokens: 1024
+  child_tokens: 160
+embedder:
+  type: local
+  model: BAAI/bge-small-en-v1.5
+store:
+  type: chroma
+  persist_dir: rag_index
+  collection: chunks
+retrieve:
+  k: 8
+  hybrid: false
+  rerank: false
+  fetch_k: 20

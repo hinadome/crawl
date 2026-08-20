@@ -11,6 +11,8 @@ wheels/
 
 # Crawl output
 scraped_output/
+scraped_output2/
 *.db
 *.db-wal
 *.db-shm
+rag_index/

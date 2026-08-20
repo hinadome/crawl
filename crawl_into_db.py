@@ -53,16 +53,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use a browser-like UA and hide webdriver (Playwright fallback only)",
     )
+    parser.add_argument(
+        "--content",
+        choices=["main", "full", "selector"],
+        default="main",
+        help="How to extract saved body text (default: main content, not nav/chrome)",
+    )
+    parser.add_argument(
+        "--content-selector",
+        type=str,
+        help="CSS selector when --content selector (e.g. 'main, article, .markdown-body')",
+    )
     return parser
 
 
 async def async_main(args: argparse.Namespace) -> int:
+    if args.content == "selector" and not args.content_selector:
+        print("--content selector requires --content-selector CSS", file=sys.stderr)
+        return 2
     db_path = os.path.abspath(args.db_file)
     db_dir = os.path.dirname(db_path)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
     frontier = Frontier(db_path)
-    sink = SqliteSink(db_path, args.output_type)
+    sink = SqliteSink(
+        db_path,
+        args.output_type,
+        content_mode=args.content,
+        content_selector=args.content_selector,
+    )
     crawler = Crawler(
         args.start_url,
         frontier,
