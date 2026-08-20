@@ -4,6 +4,7 @@ import os
 import sys
 
 from crawler import Crawler, CrawlAborted, Frontier, SqliteSink
+from crawler.cli_urls import add_url_target_args, url_target_kwargs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         help="CSS selector when --content selector (e.g. 'main, article, .markdown-body')",
     )
+    add_url_target_args(parser)
     return parser
 
 
@@ -95,6 +97,7 @@ async def async_main(args: argparse.Namespace) -> int:
         force_new=args.force_new,
         use_sitemap=args.sitemap,
         stealth=args.stealth,
+        **url_target_kwargs(args),
     )
     try:
         await crawler.run()

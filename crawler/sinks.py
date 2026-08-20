@@ -26,11 +26,16 @@ def parse_output_type(output_type: str) -> tuple[str, str]:
     )
 
 
-def _url_filename(url: str, ext: str) -> str:
+def url_relative_path(url: str, ext: str = ".md") -> str:
+    """Relative path under output_dir for a URL (hash sharding layout)."""
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     path = urlparse(url).path.strip("/") or "index"
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", path)[:60].strip("_") or "index"
     return os.path.join(digest[:2], f"{digest}_{slug}{ext}")
+
+
+def _url_filename(url: str, ext: str) -> str:
+    return url_relative_path(url, ext)
 
 
 class FilesystemSink:

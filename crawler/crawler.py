@@ -9,6 +9,7 @@ from crawler.fetch import BOT_USER_AGENT, FetchResult, Fetcher
 from crawler.frontier import ClaimedUrl, Frontier
 from crawler.normalize import normalize_url, should_enqueue
 from crawler.politeness import Politeness, fetch_sitemap_urls
+from crawler.url_list import filter_in_scope
 
 MAX_ATTEMPTS = 3
 RETRYABLE_STATUS = {429, 503}
@@ -44,6 +45,10 @@ class Crawler:
         fetcher: Fetcher | None = None,
         max_attempts: int = MAX_ATTEMPTS,
         fetch_timeout: float = 35.0,
+        extra_urls: list[str] | None = None,
+        no_follow: bool = False,
+        reprocess_urls: list[str] | None = None,
+        drain_pending: bool = False,
     ):
         self.start_url = normalize_url(start_url)
         self.seed_host = urlparse(self.start_url).hostname or ""
@@ -57,6 +62,10 @@ class Crawler:
         self.use_sitemap = use_sitemap
         self.max_attempts = max_attempts
         self.fetch_timeout = fetch_timeout
+        self.extra_urls = list(extra_urls or [])
+        self.no_follow = no_follow
+        self.reprocess_urls = list(reprocess_urls or [])
+        self.drain_pending = drain_pending
         self.politeness = Politeness(
             user_agent=BOT_USER_AGENT,
             delay=delay,
@@ -80,6 +89,9 @@ class Crawler:
         await self.fetcher.start()
         try:
             await self._prepare_frontier()
+            await self._apply_url_targets()
+            if self.drain_pending:
+                await self._raise_max_for_drain()
             await self.politeness.load_robots(self.fetcher.http, self.start_url)
             if self.use_sitemap and not await self.frontier.get_meta("sitemap_seeded"):
                 sitemap_urls = await fetch_sitemap_urls(
@@ -153,8 +165,52 @@ class Crawler:
             return
 
         await self.frontier.set_meta("seed_url", self.start_url)
-        await self.frontier.enqueue([(self.start_url, 0)])
-        print(f"[NEW START] {self.start_url}")
+        enqueue_seed = not (self.no_follow and self.extra_urls)
+        if enqueue_seed:
+            await self.frontier.enqueue([(self.start_url, 0)])
+            print(f"[NEW START] {self.start_url}")
+        else:
+            print(
+                f"[NEW START] scope={self.start_url} "
+                f"(seed not enqueued: --no-follow with target URLs)"
+            )
+
+    async def _apply_url_targets(self) -> None:
+        if self.extra_urls:
+            accepted, rejected = filter_in_scope(
+                self.extra_urls, self.seed_host, self.include_subdomains
+            )
+            for url in rejected:
+                print(f"[URL SKIP] out of scope: {url}")
+            if accepted:
+                await self.frontier.enqueue([(url, 0) for url in accepted])
+                print(f"[URL] Enqueued {len(accepted)} target URL(s)")
+
+        if self.reprocess_urls:
+            accepted, rejected = filter_in_scope(
+                [normalize_url(url) for url in self.reprocess_urls],
+                self.seed_host,
+                self.include_subdomains,
+            )
+            for url in rejected:
+                print(f"[REPROCESS SKIP] out of scope: {url}")
+            if accepted:
+                n = await self.frontier.reprocess(accepted)
+                print(f"[REPROCESS] Queued {len(accepted)} URL(s) (rows touched≈{n})")
+                self._wakeup.set()
+
+    async def _raise_max_for_drain(self) -> None:
+        """Raise max_pages so current pending (+ in_progress) can all be claimed."""
+        from crawler.status import drain_max_pages
+
+        counts = await self.frontier.counts()
+        new_max = drain_max_pages(counts, floor=self.max_pages)
+        print(
+            f"[DRAIN] pending={counts['pending']} done={counts['done']} "
+            f"in_progress={counts['in_progress']} → max_pages={new_max}"
+            + (f" (was {self.max_pages})" if new_max != self.max_pages else "")
+        )
+        self.max_pages = new_max
 
     async def _worker(self, index: int) -> None:
         del index
@@ -258,7 +314,8 @@ class Crawler:
         await self.frontier.mark(url, "done", http_status=result.status, filepath=filepath)
         print(f"[STORED] {url}")
 
-        await self._enqueue_links(result.html, result.final_url or url, depth)
+        if not self.no_follow:
+            await self._enqueue_links(result.html, result.final_url or url, depth)
 
     async def _maybe_retry(self, claimed: ClaimedUrl, result: FetchResult) -> bool:
         retryable = False

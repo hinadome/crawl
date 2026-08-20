@@ -232,6 +232,31 @@ class Frontier:
             )
             await self.db.commit()
 
+    async def reprocess(self, urls: Iterable[str], *, depth: int = 0) -> int:
+        """Force URLs to pending (insert if missing). Returns how many were touched."""
+        urls = list(urls)
+        if not urls:
+            return 0
+        now = _now()
+        touched = 0
+        async with self._lock:
+            for url in urls:
+                cursor = await self.db.execute(
+                    """
+                    INSERT INTO crawl_state (url, canonical_url, depth, status, attempts, error, updated_at)
+                    VALUES (?, ?, ?, 'pending', 0, NULL, ?)
+                    ON CONFLICT(url) DO UPDATE SET
+                        status = 'pending',
+                        attempts = 0,
+                        error = NULL,
+                        updated_at = excluded.updated_at
+                    """,
+                    (url, url, depth, now),
+                )
+                touched += cursor.rowcount or 0
+            await self.db.commit()
+        return touched
+
     async def counts(self) -> dict[str, int]:
         result = {status: 0 for status in STATUSES}
         async with self._lock:

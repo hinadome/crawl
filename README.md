@@ -31,7 +31,7 @@ Example: `scraped_output/a3/a3f1c9e2b4d0abcd_docs_getting-started.md`
 
 - **Two-character subdirectory:** a large crawl would otherwise dump thousands of files into one folder, which slows listings, backups, and some filesystems. Sharding by `hash[:2]` spreads files across up to 256 directories (`00`–`ff`).
 - **Hash in the filename:** using the raw URL as the name hits path-length limits, and stripping unsafe characters can make different URLs collide. The hash is a stable unique id; the slug is only so you can guess the page at a glance.
-- **Finding a page by URL:** use `manifest.json` or `crawl_state.db` (`url` → `filepath`). Do not expect `docs/api/v1/page.md`.
+- **Finding a page by URL:** do not expect `docs/api/v1/page.md`. Use `lookup_crawl.py` (see [Inspect crawl state](#inspect-crawl-state)), or read `manifest.json` / `crawl_state.db` (`url` → `filepath`).
 
 ### Focused page content
 
@@ -45,6 +45,32 @@ Saved files use **main-content extraction** by default so markdown is useful for
 
 Frontier link discovery always uses the **full** HTML, so menus still contribute crawl URLs even when they are omitted from the saved body. Re-crawl with `--force-new` (or a new `-o` / `-f`) to refresh already-saved pages under the new extractor.
 
+### Specific URLs (disk and SQLite)
+
+Both crawl scripts accept the same targeting flags:
+
+```bash
+# Only these pages (start_url sets host scope; not fetched when --no-follow + targets)
+uv run python crawl_into_disk.py https://example.com \
+  -o scraped_output --url-file docs.txt --no-follow --content main
+
+uv run python crawl_into_db.py https://example.com -f crawl_data.db \
+  --url https://example.com/a --url https://example.com/b --no-follow
+
+# Full crawl, but also guarantee these URLs are in the frontier
+uv run python crawl_into_disk.py https://example.com -o scraped_output \
+  --url-file must_have.txt -d 3 -p 500
+
+# Refresh one page in an existing crawl (e.g. after --content main)
+# On a large resume, set -p above the current done count or use --drain-pending
+uv run python crawl_into_disk.py https://example.com -o scraped_output \
+  --reprocess-url https://example.com/docs/install --no-follow --drain-pending
+```
+
+`docs.txt` format: one URL per line; blank lines and `#` comments ignored. Out-of-scope hosts are skipped with a log line.
+
+`--url` / `--url-file` only **enqueue** (`ON CONFLICT DO NOTHING`); they do not re-fetch already-`done` URLs. Use `--reprocess-url` to force `pending` again. Reprocess does not fetch by itself: a worker must **claim** the row (`pending` → `in_progress` → `done`). Claiming stops when `done + in_progress >= --max-pages`. On a large resume (thousands already `done`), either raise `-p` above the current `done` count or use `--drain-pending` (below).
+
 ## SQLite crawl
 
 ```bash
@@ -57,6 +83,91 @@ Stores `crawl_state`, `crawl_meta`, and `scraped_pages` in the same database fil
 
 Re-run the same command with the same `-o` / `-f` path. URLs left `in_progress` are reset to `pending` and the frontier continues. If that database already belongs to a different seed URL, the process exits unless you pass `--force-new` (wipes that state and starts over).
 
+A crawl prints `[STATS] pending=… done=…` on start/end. For inspection without starting workers, use the helpers below. Default `-p 500` is an absolute cap on `done` pages: if you already have more than 500 `done`, a resume with the default exits without claiming pending unless you raise `-p` or pass `--drain-pending`.
+
+## Inspect crawl state
+
+### Queue counts — `crawl_status.py`
+
+Shows frontier totals (`pending`, `in_progress`, `done`, `failed`, `skipped`, `skipped_depth`) from disk or SQLite crawl state:
+
+```bash
+uv run python crawl_status.py -o scraped_output
+uv run python crawl_status.py -f crawl_data.db
+uv run python crawl_status.py -o scraped_output --format json
+```
+
+Defaults to `-o scraped_output` when neither `-o` nor `-f` is set. Library: `from crawler.status import frontier_status`.
+
+#### How to read the counts
+
+Example:
+
+```text
+total:           24615
+pending:         0
+in_progress:     0
+done:            12000
+failed:          25
+skipped:         149
+skipped_depth:   12441
+```
+
+| Status | Meaning |
+|---|---|
+| `done` | Fetched and stored (file on disk or row in `scraped_pages`). This is the crawl yield. |
+| `failed` | Fetch attempted but gave up (timeouts, HTTP errors, WAF, retries exhausted). |
+| `skipped` | Known but not fetched for policy reasons (usually `robots.txt`). |
+| `skipped_depth` | Discovered from links, but deeper than `--max-depth` (default 3), so recorded and never fetched. |
+| `pending` | Queued, waiting to be claimed by a worker. |
+| `in_progress` | Claimed by a worker right now (orphans reset to `pending` on the next resume). |
+
+`total` is **every URL ever inserted into the frontier**, not “pages downloaded”:
+
+```text
+total = done + failed + skipped + skipped_depth + pending + in_progress
+```
+
+So `total` can be much larger than `done`. A large `skipped_depth` means the site’s link graph extends past `-d`; raise `--max-depth` (and usually `-p` or `--drain-pending`) if you want those URLs fetched. `-p` / `--max-pages` caps **`done`** only — it does not stop deeper URLs from being recorded as `skipped_depth`.
+
+`pending=0` and `in_progress=0` means the claimable queue is empty (a drained or finished run).
+
+### Drain pending queue — `--drain-pending`
+
+After targets/reprocess are applied, the crawler raises `--max-pages` to `done + pending + in_progress` so every currently pending URL can be claimed. Logs `[DRAIN] pending=… done=… → max_pages=…`. Prefer `--no-follow` so link discovery does not grow the queue while draining.
+
+```bash
+# 1) See how much is queued
+uv run python crawl_status.py -o scraped_output
+
+# 2) Fetch everything currently pending (disk)
+uv run python crawl_into_disk.py https://example.com -o scraped_output \
+  --drain-pending --no-follow -c 4
+
+# Same for SQLite crawl
+uv run python crawl_into_db.py https://example.com -f crawl_data.db \
+  --drain-pending --no-follow -c 4
+
+# Reprocess one URL, then drain so it actually runs on a large resume
+uv run python crawl_into_disk.py https://example.com -o scraped_output \
+  --reprocess-url https://example.com/docs/install \
+  --drain-pending --no-follow
+```
+
+Library helper: `from crawler.status import drain_max_pages` (used by `Crawler` when `drain_pending=True`).
+
+### URL → disk path — `lookup_crawl.py`
+
+Resolves one URL against a disk crawl output dir: frontier status, recorded `filepath`, expected hash path, and whether the file exists (`ok` when status is `done` and the file is present):
+
+```bash
+uv run python lookup_crawl.py "https://example.com/docs/page" -o scraped_output
+uv run python lookup_crawl.py "https://example.com/docs/page" -o scraped_output --strict
+uv run python lookup_crawl.py "https://example.com/docs/page" -o scraped_output --format json
+```
+
+`--strict` exits `1` unless `ok`. Library: `from crawler.lookup import lookup_disk_url`.
+
 ## Options
 
 `start_url` is required on both scripts. Everything else is optional.
@@ -68,7 +179,7 @@ Re-run the same command with the same `-o` / `-f` path. URLs left `in_progress` 
 | `start_url` | (required) | Seed URL. Only this host is crawled unless `--include-subdomains` is set. |
 | `-t`, `--output-type` | `markdown` | Saved page format: `markdown`, `html`, or `json`. |
 | `-d`, `--max-depth` | `3` | How far to follow links from the seed (`0` = seed page only). Deeper URLs are recorded as `skipped_depth` and not fetched. |
-| `-p`, `--max-pages` | `500` | Maximum number of pages stored as `done`. The crawl stops when this count is reached, even if more links are queued. |
+| `-p`, `--max-pages` | `500` | Cap on pages stored as `done`. Workers stop claiming when `done + in_progress >=` this value, even if more URLs are `pending`. On resume, set `-p` **above** the current `done` count (see `crawl_status.py`) or use `--drain-pending`, or nothing new is fetched. |
 | `-c`, `--concurrency` | `2` | Number of worker tasks fetching in parallel. |
 | `--delay` | `0.5` | Seconds to wait between request starts to the same host. |
 | `--include-subdomains` | off | Also crawl hosts like `docs.example.com` when the seed is `example.com`. Off = exact host only. |
@@ -78,6 +189,11 @@ Re-run the same command with the same `-o` / `-f` path. URLs left `in_progress` 
 | `--force-new` | off | Wipe existing crawl state for this output path / database and start a new crawl. |
 | `--content` | `main` | How to extract **saved** body text: `main` (Trafilatura + semantic fallback, default), `full` (whole page minus script/style), or `selector` (CSS). Link discovery still uses the full page. |
 | `--content-selector` | | CSS selector when `--content selector` (e.g. `main, article, .markdown-body`). |
+| `--url` | | Extra URL to crawl at depth 0 (repeatable). |
+| `--url-file` | | File of URLs (one per line; `#` comments allowed). |
+| `--no-follow` | off | Do not enqueue discovered links. With target URLs, `start_url` is used only for host scope (not fetched on a fresh crawl). |
+| `--reprocess-url` | | Force an existing (or new) URL back to `pending` so it can be fetched again (repeatable). Still subject to `-p` unless `--drain-pending`; use `lookup_crawl.py` / `crawl_status.py` to verify. |
+| `--drain-pending` | off | After enqueue/reprocess, raise `-p` to `done + pending + in_progress` so the whole pending queue can be claimed. Prefer with `--no-follow` on large resumes. |
 | `-h`, `--help` | | Print usage and exit. |
 
 ### Disk only (`crawl_into_disk.py`)
